@@ -113,17 +113,34 @@ def save_rss_data(source, entries):
     """將單個RSS源的數據保存到Supabase"""
     for entry in entries:
         try:
-            supabase.table("rss_entries").upsert({
-                "source": source,
-                "title": entry['title'],
-                "title_translated": entry.get('title_translated', ''),
-                "link": entry['link'],
-                "published": entry['published'],
-                "tldr": entry.get('tldr', ''),
-                "pmid": entry['pmid']
-            }, on_conflict=["source", "pmid"]).execute()
+            # 檢查條目是否已存在
+            existing = supabase.table("rss_entries").select("*").eq("source", source).eq("pmid", entry['pmid']).execute()
+            
+            if existing.data:
+                # 如果存在，更新
+                supabase.table("rss_entries").update({
+                    "title": entry['title'],
+                    "title_translated": entry.get('title_translated', ''),
+                    "link": entry['link'],
+                    "published": entry['published'],
+                    "tldr": entry.get('tldr', '')
+                }).eq("source", source).eq("pmid", entry['pmid']).execute()
+                print(f"Updated existing entry {entry['pmid']} for source {source}")
+            else:
+                # 如果不存在，插入
+                supabase.table("rss_entries").insert({
+                    "source": source,
+                    "title": entry['title'],
+                    "title_translated": entry.get('title_translated', ''),
+                    "link": entry['link'],
+                    "published": entry['published'],
+                    "tldr": entry.get('tldr', ''),
+                    "pmid": entry['pmid']
+                }).execute()
+                print(f"Inserted new entry {entry['pmid']} for source {source}")
         except Exception as e:
-            print(f"Error saving entry {entry['pmid']} for source {source}: {e}")
+            print(f"Error processing entry {entry['pmid']} for source {source}: {e}")
+            print(f"Entry data: {entry}")  # 打印完整的條目數據以幫助調試
 
 def process_rss_sources(sources):
     """處理所有RSS來源並立即保存數據"""
