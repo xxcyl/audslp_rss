@@ -2,7 +2,7 @@ name: Update RSS Feed
 
 on:
   schedule:
-    - cron: '0 0 */1 * *'  # 每7天運行一次
+    - cron: '0 */6 * * *'  # 每6小時運行一次
   workflow_dispatch:  # 允許手動觸發
 
 jobs:
@@ -10,10 +10,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - name: Check out repository
-      uses: actions/checkout@v3
+      uses: actions/checkout@v4  # 更新到 v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5  # 更新到 v5
       with:
         python-version: '3.9'  # 指定 Python 版本
 
