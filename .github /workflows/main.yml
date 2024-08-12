@@ -1,0 +1,46 @@
+name: Update RSS Feed
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'  # 每6小時運行一次
+  workflow_dispatch:  # 允許手動觸發
+
+jobs:
+  update-rss:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check out repository
+      uses: actions/checkout@v3
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'  # 指定 Python 版本
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Run RSS processor
+      env:
+        OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+        SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+      run: python rss_processor.py
+
+    - name: Handle script failure
+      if: failure()
+      run: |
+        echo "RSS processing script failed. Check the logs for more information."
+        # 可以在這裡添加更多的錯誮處理邏輯,例如發送通知
+
+    - name: Update last run time
+      if: success()
+      run: |
+        echo "Last successful run: $(date)" > last_run.txt
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        git add last_run.txt
+        git commit -m "Update last run time" || echo "No changes to commit"
+        git push
