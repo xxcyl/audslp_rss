@@ -104,38 +104,34 @@ def fetch_rss_basic(url):
         'entries': entries
     }
 
-def load_existing_data():
-    """從 Supabase 加載現有的數據"""
-    response = supabase.table("rss_entries").select("*").execute()
-    data = {}
-    for row in response.data:
-        source = row['source']
-        if source not in data:
-            data[source] = {'entries': []}
-        data[source]['entries'].append(row)
-    return data
+def load_existing_data_for_source(source):
+    """從Supabase加載特定源的現有數據"""
+    response = supabase.table("rss_entries").select("*").eq("source", source).execute()
+    return response.data
 
-def save_rss_data(data):
-    """將 RSS 數據保存到 Supabase"""
-    for source, feed_data in data.items():
-        for entry in feed_data['entries']:
+def save_rss_data(source, entries):
+    """將單個RSS源的數據保存到Supabase"""
+    for entry in entries:
+        try:
             supabase.table("rss_entries").upsert({
                 "source": source,
                 "title": entry['title'],
-                "title_translated": entry['title_translated'],
+                "title_translated": entry.get('title_translated', ''),
                 "link": entry['link'],
                 "published": entry['published'],
-                "tldr": entry['tldr'],
+                "tldr": entry.get('tldr', ''),
                 "pmid": entry['pmid']
             }, on_conflict=["source", "pmid"]).execute()
+        except Exception as e:
+            print(f"Error saving entry {entry['pmid']} for source {source}: {e}")
 
-def process_rss_sources(sources, existing_data):
-    """處理所有RSS來源並合併數據"""
-    result = existing_data or {}
+def process_rss_sources(sources):
+    """處理所有RSS來源並立即保存數據"""
     for name, url in sources.items():
-        new_feed_data = fetch_rss_basic(url)
-        if name in result:
-            existing_entries = result[name]['entries']
+        try:
+            print(f"Processing source: {name}")
+            new_feed_data = fetch_rss_basic(url)
+            existing_entries = load_existing_data_for_source(name)
             existing_pmids = {entry['pmid'] for entry in existing_entries if 'pmid' in entry}
             
             new_entries = []
@@ -148,26 +144,11 @@ def process_rss_sources(sources, existing_data):
             all_entries = existing_entries + new_entries
             all_entries.sort(key=lambda x: x['published'], reverse=True)
             
-            result[name] = {
-                'feed_title': new_feed_data['feed_title'],
-                'feed_link': new_feed_data['feed_link'],
-                'feed_updated': new_feed_data['feed_updated'],
-                'entries': all_entries
-            }
-        else:
-            new_entries = [
-                {**entry, 
-                 'title_translated': translate_title(entry['title']),
-                 'tldr': generate_tldr(entry['full_content'])}
-                for entry in new_feed_data['entries']
-            ]
-            result[name] = {
-                'feed_title': new_feed_data['feed_title'],
-                'feed_link': new_feed_data['feed_link'],
-                'feed_updated': new_feed_data['feed_updated'],
-                'entries': new_entries
-            }
-    return result
+            save_rss_data(name, all_entries)
+            print(f"Processed and saved {len(new_entries)} new entries for {name}")
+        except Exception as e:
+            print(f"Error processing source {name}: {e}")
+            continue
 
 def load_rss_sources(file_path='rss_sources.json'):
     """從JSON文件加載RSS來源"""
@@ -186,10 +167,8 @@ if __name__ == "__main__":
     rss_sources = load_rss_sources()
     
     try:
-        existing_data = load_existing_data()
-        data = process_rss_sources(rss_sources, existing_data)
-        save_rss_data(data)
-        print("RSS data has been processed and saved to Supabase")
+        process_rss_sources(rss_sources)
+        print("RSS data processing completed successfully")
     except Exception as e:
-        print(f"An error occurred: {e}")
+        print(f"An error occurred during RSS processing: {e}")
         sys.exit(1)
