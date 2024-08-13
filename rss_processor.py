@@ -74,6 +74,24 @@ Ensure the summary captures the essence of the research while being extremely co
         print(f"Error in generate_tldr: {e}")
         return text
 
+def generate_keywords(title, full_content):
+    """使用OpenAI API生成文章的關鍵字"""
+    try:
+        preprocessed_content = preprocess_content(full_content)
+        input_text = f"Title: {title}\n\nContent: {preprocessed_content}"
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are an expert in academic content analysis. Generate 5-7 relevant keywords in English for the given academic article. Focus on the main topics, methods, and findings. Pay special attention to the title as it often contains key information. Separate keywords with commas."},
+                {"role": "user", "content": input_text}
+            ]
+        )
+        return response.choices[0].message.content.strip().split(', ')
+    except Exception as e:
+        print(f"Error in generate_keywords: {e}")
+        return []
+
 def fetch_rss_basic(url):
     """獲取 RSS feed 的基本內容"""
     feed = feedparser.parse(url)
@@ -87,7 +105,7 @@ def fetch_rss_basic(url):
         text_content = soup.get_text(separator='\n', strip=True)
         
         pmid = entry['guid'].split(':')[-1] if 'guid' in entry else None
-        published = entry.get('date', datetime.date.today().isoformat())
+        published = entry.get('published', datetime.datetime.now().isoformat())
         
         entries.append({
             'title': entry.title,
@@ -100,7 +118,7 @@ def fetch_rss_basic(url):
     return {
         'feed_title': feed.feed.title,
         'feed_link': feed.feed.link,
-        'feed_updated': feed.feed.updated if 'updated' in feed.feed else datetime.date.today().isoformat(),
+        'feed_updated': feed.feed.get('updated', datetime.datetime.now().isoformat()),
         'entries': entries
     }
 
@@ -110,24 +128,19 @@ def load_existing_data_for_source(source):
     return response.data
 
 def save_rss_data(source, entries):
-    """將單個RSS源的數據保存到Supabase"""
+    """將RSS源的數據保存到Supabase"""
     for entry in entries:
         try:
-            # 檢查條目是否已存在
             existing = supabase.table("rss_entries").select("*").eq("source", source).eq("pmid", entry['pmid']).execute()
             
             if existing.data:
-                # 如果存在，更新
+                # 對於已存在的條目，只更新連結
                 supabase.table("rss_entries").update({
-                    "title": entry['title'],
-                    "title_translated": entry.get('title_translated', ''),
-                    "link": entry['link'],
-                    "published": entry['published'],
-                    "tldr": entry.get('tldr', '')
+                    "link": entry['link']
                 }).eq("source", source).eq("pmid", entry['pmid']).execute()
-                print(f"Updated existing entry {entry['pmid']} for source {source}")
+                print(f"Updated link for existing entry {entry['pmid']} for source {source}")
             else:
-                # 如果不存在，插入
+                # 對於新條目，插入所有字段
                 supabase.table("rss_entries").insert({
                     "source": source,
                     "title": entry['title'],
@@ -135,12 +148,13 @@ def save_rss_data(source, entries):
                     "link": entry['link'],
                     "published": entry['published'],
                     "tldr": entry.get('tldr', ''),
-                    "pmid": entry['pmid']
+                    "pmid": entry['pmid'],
+                    "keywords": entry.get('keywords', [])
                 }).execute()
                 print(f"Inserted new entry {entry['pmid']} for source {source}")
         except Exception as e:
             print(f"Error processing entry {entry['pmid']} for source {source}: {e}")
-            print(f"Entry data: {entry}")  # 打印完整的條目數據以幫助調試
+            print(f"Entry data: {entry}")
 
 def process_rss_sources(sources):
     """處理所有RSS來源並立即保存數據"""
@@ -149,20 +163,32 @@ def process_rss_sources(sources):
             print(f"Processing source: {name}")
             new_feed_data = fetch_rss_basic(url)
             existing_entries = load_existing_data_for_source(name)
-            existing_pmids = {entry['pmid'] for entry in existing_entries if 'pmid' in entry}
+            existing_pmids = {entry['pmid']: entry for entry in existing_entries if 'pmid' in entry}
             
             new_entries = []
+            updated_entries = []
             for entry in new_feed_data['entries']:
                 if entry['pmid'] not in existing_pmids:
+                    # 處理新文章
                     entry['title_translated'] = translate_title(entry['title'])
                     entry['tldr'] = generate_tldr(entry['full_content'])
+                    entry['keywords'] = generate_keywords(entry['title'], entry['full_content'])
                     new_entries.append(entry)
+                else:
+                    # 對於重複文章，只更新連結
+                    existing_entry = existing_pmids[entry['pmid']]
+                    if existing_entry['link'] != entry['link']:
+                        existing_entry['link'] = entry['link']
+                        updated_entries.append(existing_entry)
             
-            all_entries = existing_entries + new_entries
-            all_entries.sort(key=lambda x: x['published'], reverse=True)
+            # 合併新文章和需要更新連結的文章
+            entries_to_save = new_entries + updated_entries
             
-            save_rss_data(name, all_entries)
-            print(f"Processed and saved {len(new_entries)} new entries for {name}")
+            if entries_to_save:
+                save_rss_data(name, entries_to_save)
+                print(f"Processed {len(new_entries)} new entries and updated links for {len(updated_entries)} existing entries for {name}")
+            else:
+                print(f"No new entries or link updates for {name}")
         except Exception as e:
             print(f"Error processing source {name}: {e}")
             continue
