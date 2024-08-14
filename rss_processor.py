@@ -4,9 +4,9 @@ import datetime
 import time
 import os
 import sys
+import re
 from bs4 import BeautifulSoup
 from openai import OpenAI
-import re
 from supabase import create_client, Client
 
 def get_openai_api_key():
@@ -107,12 +107,17 @@ def fetch_rss_basic(url):
         pmid = entry['guid'].split(':')[-1] if 'guid' in entry else None
         published = entry.get('published', datetime.datetime.now().isoformat())
         
+        # 使用正則表達式從 content 中提取 DOI
+        doi_match = re.search(r'DOI:\s*<a[^>]*>(.*?)</a>', content)
+        doi = doi_match.group(1) if doi_match else None
+        
         entries.append({
             'title': entry.title,
             'link': entry.link,
             'published': published,
             'full_content': text_content,
-            'pmid': pmid
+            'pmid': pmid,
+            'doi': doi
         })
     
     return {
@@ -134,11 +139,11 @@ def save_rss_data(source, entries):
             existing = supabase.table("rss_entries").select("*").eq("source", source).eq("pmid", entry['pmid']).execute()
             
             if existing.data:
-                # 對於已存在的條目，只更新連結
+                # 對於已存在的條目，只更新DOI
                 supabase.table("rss_entries").update({
-                    "link": entry['link']
+                    "doi": entry['doi']
                 }).eq("source", source).eq("pmid", entry['pmid']).execute()
-                print(f"Updated link for existing entry {entry['pmid']} for source {source}")
+                print(f"Updated DOI for existing entry {entry['pmid']} for source {source}")
             else:
                 # 對於新條目，插入所有字段
                 supabase.table("rss_entries").insert({
@@ -149,6 +154,7 @@ def save_rss_data(source, entries):
                     "published": entry['published'],
                     "tldr": entry.get('tldr', ''),
                     "pmid": entry['pmid'],
+                    "doi": entry['doi'],
                     "keywords": entry.get('keywords', [])
                 }).execute()
                 print(f"Inserted new entry {entry['pmid']} for source {source}")
@@ -175,20 +181,20 @@ def process_rss_sources(sources):
                     entry['keywords'] = generate_keywords(entry['title'], entry['full_content'])
                     new_entries.append(entry)
                 else:
-                    # 對於重複文章，只更新連結
+                    # 對於重複文章，只更新DOI
                     existing_entry = existing_pmids[entry['pmid']]
-                    if existing_entry['link'] != entry['link']:
-                        existing_entry['link'] = entry['link']
+                    if existing_entry.get('doi') != entry['doi']:
+                        existing_entry['doi'] = entry['doi']
                         updated_entries.append(existing_entry)
             
-            # 合併新文章和需要更新連結的文章
+            # 合併新文章和需要更新DOI的文章
             entries_to_save = new_entries + updated_entries
             
             if entries_to_save:
                 save_rss_data(name, entries_to_save)
-                print(f"Processed {len(new_entries)} new entries and updated links for {len(updated_entries)} existing entries for {name}")
+                print(f"Processed {len(new_entries)} new entries and updated DOIs for {len(updated_entries)} existing entries for {name}")
             else:
-                print(f"No new entries or link updates for {name}")
+                print(f"No new entries or DOI updates for {name}")
         except Exception as e:
             print(f"Error processing source {name}: {e}")
             continue
