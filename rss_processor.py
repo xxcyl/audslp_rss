@@ -107,24 +107,12 @@ def fetch_rss_basic(url):
         pmid = entry['guid'].split(':')[-1] if 'guid' in entry else None
         published = entry.get('published', datetime.datetime.now().isoformat())
         
-        # 擷取 DOI
-        doi = None
-        if 'dc_identifier' in entry:
-            identifiers = entry.get('dc_identifier', [])
-            for identifier in identifiers:
-                if identifier.startswith('doi:'):
-                    doi = identifier.split('doi:')[-1]
-                    break
-        
-        print(f"Fetched entry - PMID: {pmid}, DOI: {doi}")  # 日誌輸出
-        
         entries.append({
             'title': entry.title,
             'link': entry.link,
             'published': published,
             'full_content': text_content,
-            'pmid': pmid,
-            'doi': doi
+            'pmid': pmid
         })
     
     return {
@@ -146,20 +134,13 @@ def save_rss_data(source, entries):
             existing = supabase.table("rss_entries").select("*").eq("source", source).eq("pmid", entry['pmid']).execute()
             
             if existing.data:
-                existing_doi = existing.data[0].get('doi')
-                new_doi = entry.get('doi')
-                print(f"Existing entry - PMID: {entry['pmid']}, Existing DOI: {existing_doi}, New DOI: {new_doi}")  # 日誌
-                
-                # 如果新的DOI存在，且與現有DOI不同（包括現有DOI為None的情況），則更新
-                if new_doi and new_doi != existing_doi:
-                    supabase.table("rss_entries").update({
-                        "doi": new_doi
-                    }).eq("source", source).eq("pmid", entry['pmid']).execute()
-                    print(f"Updated DOI for existing entry {entry['pmid']} for source {source}")
-                else:
-                    print(f"No DOI update needed for entry {entry['pmid']}")  # 日誌
+                # 對於已存在的條目，只更新連結
+                supabase.table("rss_entries").update({
+                    "link": entry['link']
+                }).eq("source", source).eq("pmid", entry['pmid']).execute()
+                print(f"Updated link for existing entry {entry['pmid']} for source {source}")
             else:
-                # 對於新條目，插入所有字段，包括 DOI
+                # 對於新條目，插入所有字段
                 supabase.table("rss_entries").insert({
                     "source": source,
                     "title": entry['title'],
@@ -168,8 +149,7 @@ def save_rss_data(source, entries):
                     "published": entry['published'],
                     "tldr": entry.get('tldr', ''),
                     "pmid": entry['pmid'],
-                    "keywords": entry.get('keywords', []),
-                    "doi": entry.get('doi')
+                    "keywords": entry.get('keywords', [])
                 }).execute()
                 print(f"Inserted new entry {entry['pmid']} for source {source}")
         except Exception as e:
@@ -194,31 +174,21 @@ def process_rss_sources(sources):
                     entry['tldr'] = generate_tldr(entry['full_content'])
                     entry['keywords'] = generate_keywords(entry['title'], entry['full_content'])
                     new_entries.append(entry)
-                    print(f"New entry found - PMID: {entry['pmid']}, DOI: {entry.get('doi')}")  # 日誌
                 else:
-                    # 對於重複文章，檢查是否需要更新 DOI
+                    # 對於重複文章，只更新連結
                     existing_entry = existing_pmids[entry['pmid']]
-                    existing_doi = existing_entry.get('doi')
-                    new_doi = entry.get('doi')
-                    
-                    print(f"Existing entry - PMID: {entry['pmid']}, Existing DOI: {existing_doi}, New DOI: {new_doi}")  # 日誌
-                    
-                    # 如果新的DOI不為空，且與現有DOI不同（包括現有DOI為None的情況）
-                    if new_doi and new_doi != existing_doi:
-                        existing_entry['doi'] = new_doi
+                    if existing_entry['link'] != entry['link']:
+                        existing_entry['link'] = entry['link']
                         updated_entries.append(existing_entry)
-                        print(f"Updating DOI for entry {entry['pmid']} from {existing_doi} to {new_doi}")
-                    else:
-                        print(f"No DOI update needed for entry {entry['pmid']}")  # 日誌
             
-            # 合併新文章和需要更新 DOI 的文章
+            # 合併新文章和需要更新連結的文章
             entries_to_save = new_entries + updated_entries
             
             if entries_to_save:
                 save_rss_data(name, entries_to_save)
-                print(f"Processed {len(new_entries)} new entries and updated DOIs for {len(updated_entries)} existing entries for {name}")
+                print(f"Processed {len(new_entries)} new entries and updated links for {len(updated_entries)} existing entries for {name}")
             else:
-                print(f"No new entries or DOI updates for {name}")
+                print(f"No new entries or link updates for {name}")
         except Exception as e:
             print(f"Error processing source {name}: {e}")
             continue
