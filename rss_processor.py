@@ -143,11 +143,12 @@ def save_rss_data(source, entries):
             existing = supabase.table("rss_entries").select("*").eq("source", source).eq("pmid", entry['pmid']).execute()
             
             if existing.data:
-                # 對於已存在的條目，只更新 DOI
-                supabase.table("rss_entries").update({
-                    "doi": entry['doi']
-                }).eq("source", source).eq("pmid", entry['pmid']).execute()
-                print(f"Updated DOI for existing entry {entry['pmid']} for source {source}")
+                # 對於已存在的條目，只在新的DOI不為空時更新
+                if entry['doi']:
+                    supabase.table("rss_entries").update({
+                        "doi": entry['doi']
+                    }).eq("source", source).eq("pmid", entry['pmid']).execute()
+                    print(f"Updated DOI for existing entry {entry['pmid']} for source {source}")
             else:
                 # 對於新條目，插入所有字段，包括 DOI
                 supabase.table("rss_entries").insert({
@@ -185,11 +186,16 @@ def process_rss_sources(sources):
                     entry['keywords'] = generate_keywords(entry['title'], entry['full_content'])
                     new_entries.append(entry)
                 else:
-                    # 對於重複文章，只更新 DOI
+                    # 對於重複文章，檢查是否需要更新 DOI
                     existing_entry = existing_pmids[entry['pmid']]
-                    if existing_entry.get('doi') != entry['doi']:
-                        existing_entry['doi'] = entry['doi']
+                    existing_doi = existing_entry.get('doi')
+                    new_doi = entry.get('doi')
+                    
+                    # 如果新的DOI不為空，且與現有DOI不同（包括現有DOI為空的情況）
+                    if new_doi and new_doi != existing_doi:
+                        existing_entry['doi'] = new_doi
                         updated_entries.append(existing_entry)
+                        print(f"Updating DOI for entry {entry['pmid']} from {existing_doi} to {new_doi}")
             
             # 合併新文章和需要更新 DOI 的文章
             entries_to_save = new_entries + updated_entries
