@@ -109,11 +109,12 @@ def fetch_rss_basic(url):
         
         # 擷取 DOI
         doi = None
-        if 'dc_identifier' in entry:
-            for identifier in entry.dc_identifier:
+        if 'identifier' in entry:
+            identifiers = entry.identifier if isinstance(entry.identifier, list) else [entry.identifier]
+            for identifier in identifiers:
                 if identifier.startswith('doi:'):
                     doi = identifier.split('doi:')[-1]
-                    break
+                    break  # 找到 DOI 後立即退出循環
         
         print(f"Fetched entry - PMID: {pmid}, DOI: {doi}")  # 日誌輸出
         
