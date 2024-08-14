@@ -83,7 +83,7 @@ def generate_keywords(title, full_content):
         response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You are an expert in academic content analysis. Generate 5-7 relevant keywords in English for the given academic article. Focus on the main topics, methods, and findings. Pay special attention to the title as it often contains key information. Separate keywords with commas."},
+                {"role": "system", "content": "You are an expert in academic content analysis. Generate 5 relevant keywords in English for the given academic article. Focus on the main topics, methods, and findings. Pay special attention to the title as it often contains key information. Separate keywords with commas."},
                 {"role": "user", "content": input_text}
             ]
         )
