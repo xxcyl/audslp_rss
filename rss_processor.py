@@ -109,8 +109,8 @@ def fetch_rss_basic(url):
         
         # 擷取 DOI
         doi = None
-        if 'identifier' in entry:
-            identifiers = entry.identifier if isinstance(entry.identifier, list) else [entry.identifier]
+        if 'dc:identifier' in entry:
+            identifiers = entry['dc:identifier'] if isinstance(entry['dc:identifier'], list) else [entry['dc:identifier']]
             for identifier in identifiers:
                 if identifier.startswith('doi:'):
                     doi = identifier.split('doi:')[-1]
