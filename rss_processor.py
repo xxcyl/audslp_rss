@@ -115,6 +115,8 @@ def fetch_rss_basic(url):
                     doi = identifier.split('doi:')[-1]
                     break
         
+        print(f"Fetched entry - PMID: {pmid}, DOI: {doi}")  # 新增的日誌
+        
         entries.append({
             'title': entry.title,
             'link': entry.link,
@@ -143,12 +145,18 @@ def save_rss_data(source, entries):
             existing = supabase.table("rss_entries").select("*").eq("source", source).eq("pmid", entry['pmid']).execute()
             
             if existing.data:
-                # 對於已存在的條目，只在新的DOI不為空時更新
-                if entry['doi']:
+                existing_doi = existing.data[0].get('doi')
+                new_doi = entry.get('doi')
+                print(f"Existing entry - PMID: {entry['pmid']}, Existing DOI: {existing_doi}, New DOI: {new_doi}")  # 新增的日誌
+                
+                # 對於已存在的條目，只在新的DOI不為空且與現有DOI不同時更新
+                if new_doi and new_doi != existing_doi:
                     supabase.table("rss_entries").update({
-                        "doi": entry['doi']
+                        "doi": new_doi
                     }).eq("source", source).eq("pmid", entry['pmid']).execute()
                     print(f"Updated DOI for existing entry {entry['pmid']} for source {source}")
+                else:
+                    print(f"No DOI update needed for entry {entry['pmid']}")  # 新增的日誌
             else:
                 # 對於新條目，插入所有字段，包括 DOI
                 supabase.table("rss_entries").insert({
@@ -160,7 +168,7 @@ def save_rss_data(source, entries):
                     "tldr": entry.get('tldr', ''),
                     "pmid": entry['pmid'],
                     "keywords": entry.get('keywords', []),
-                    "doi": entry['doi']
+                    "doi": entry.get('doi')
                 }).execute()
                 print(f"Inserted new entry {entry['pmid']} for source {source}")
         except Exception as e:
@@ -185,17 +193,22 @@ def process_rss_sources(sources):
                     entry['tldr'] = generate_tldr(entry['full_content'])
                     entry['keywords'] = generate_keywords(entry['title'], entry['full_content'])
                     new_entries.append(entry)
+                    print(f"New entry found - PMID: {entry['pmid']}, DOI: {entry.get('doi')}")  # 新增的日誌
                 else:
                     # 對於重複文章，檢查是否需要更新 DOI
                     existing_entry = existing_pmids[entry['pmid']]
                     existing_doi = existing_entry.get('doi')
                     new_doi = entry.get('doi')
                     
+                    print(f"Existing entry - PMID: {entry['pmid']}, Existing DOI: {existing_doi}, New DOI: {new_doi}")  # 新增的日誌
+                    
                     # 如果新的DOI不為空，且與現有DOI不同（包括現有DOI為空的情況）
                     if new_doi and new_doi != existing_doi:
                         existing_entry['doi'] = new_doi
                         updated_entries.append(existing_entry)
                         print(f"Updating DOI for entry {entry['pmid']} from {existing_doi} to {new_doi}")
+                    else:
+                        print(f"No DOI update needed for entry {entry['pmid']}")  # 新增的日誌
             
             # 合併新文章和需要更新 DOI 的文章
             entries_to_save = new_entries + updated_entries
