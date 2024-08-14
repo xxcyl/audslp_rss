@@ -111,10 +111,18 @@ def fetch_rss_basic(url):
         doi = None
         if 'dc:identifier' in entry:
             identifiers = entry['dc:identifier'] if isinstance(entry['dc:identifier'], list) else [entry['dc:identifier']]
+            
+            # 確保我們檢查所有的標識符，特別是第二個（如果存在）
             for identifier in identifiers:
                 if identifier.startswith('doi:'):
                     doi = identifier.split('doi:')[-1]
                     break  # 找到 DOI 後立即退出循環
+            
+            # 如果沒有找到以 'doi:' 開頭的標識符，檢查是否有第二個標識符
+            if doi is None and len(identifiers) > 1:
+                second_identifier = identifiers[1]
+                if ':' in second_identifier:
+                    doi = second_identifier.split(':')[-1]
         
         print(f"Fetched entry - PMID: {pmid}, DOI: {doi}")  # 日誌輸出
         
