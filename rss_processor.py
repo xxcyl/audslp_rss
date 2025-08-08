@@ -129,23 +129,7 @@ Ensure the summary captures the essence of the research while being extremely co
             print(f"Error in generate_tldr: {e}")
             return "Unable to generate summary.", "無法生成摘要"
 
-    def generate_keywords(self, title, full_content):
-        """使用OpenAI API生成文章的關鍵字"""
-        try:
-            preprocessed_content = self.preprocess_content(full_content)
-            input_text = f"Title: {title}\n\nContent: {preprocessed_content}"
-            
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": "You are an expert in academic content analysis. Generate 5 relevant keywords in English for the given academic article. Focus on the main topics, methods, and findings. Pay special attention to the title as it often contains key information. Separate keywords with commas."},
-                    {"role": "user", "content": input_text}
-                ]
-            )
-            return response.choices[0].message.content.strip().split(', ')
-        except Exception as e:
-            print(f"Error in generate_keywords: {e}")
-            return []
+    # generate_keywords 方法已移除，不再需要
 
     def prepare_embedding_text(self, article, strategy="hybrid"):
         """
@@ -311,7 +295,7 @@ Ensure the summary captures the essence of the research while being extremely co
                         "english_tldr": entry.get('english_tldr', ''),
                         "pmid": entry['pmid'],
                         "doi": entry['doi'],
-                        "keywords": entry.get('keywords', []),
+                        "keywords": [],  # 保持資料庫結構相容性
                         "embedding": entry.get('embedding'),
                         "embedding_text": entry.get('embedding_text', ''),
                         "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None
@@ -348,8 +332,7 @@ Ensure the summary captures the essence of the research while being extremely co
                         entry['english_tldr'] = english_tldr
                         entry['chinese_tldr'] = chinese_tldr
                         
-                        # 生成關鍵字
-                        entry['keywords'] = self.generate_keywords(entry['title'], entry['full_content'])
+
                         
                         new_entries.append(entry)
                     else:
