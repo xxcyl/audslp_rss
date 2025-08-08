@@ -295,7 +295,6 @@ Ensure the summary captures the essence of the research while being extremely co
                         "english_tldr": entry.get('english_tldr', ''),
                         "pmid": entry['pmid'],
                         "doi": entry['doi'],
-                        "keywords": [],  # 保持資料庫結構相容性
                         "embedding": entry.get('embedding'),
                         "embedding_text": entry.get('embedding_text', ''),
                         "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None
