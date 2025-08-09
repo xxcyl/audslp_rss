@@ -297,7 +297,8 @@ Ensure the summary captures the essence of the research while being extremely co
                         "doi": entry['doi'],
                         "embedding": entry.get('embedding'),
                         "embedding_text": entry.get('embedding_text', ''),
-                        "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None
+                        "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None,
+                        "likes_count": 0 
                     }
                     
                     self.supabase.table("rss_entries").insert(insert_data).execute()
