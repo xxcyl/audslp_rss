@@ -15,7 +15,7 @@ class LiteratureProcessor:
         # 初始化 OpenAI 客戶端
         self.api_key = self.get_openai_api_key()
         self.client = OpenAI(api_key=self.api_key)
-        self.model = "gpt-4o-mini"
+        self.model = "gpt-4.1-mini"
         
         # 向量嵌入設定
         self.enable_embeddings = True
