@@ -5,6 +5,8 @@ import time
 import os
 import sys
 import re
+import requests
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from openai import OpenAI
 from supabase import create_client, Client
@@ -255,6 +257,43 @@ Ensure the summary captures the essence of the research while being extremely co
             'entries': entries
         }
 
+    def fetch_publication_types(self, pmids):
+        """透過 PubMed E-utilities 批次取得文章的研究類型 (Publication Type)"""
+        pmids = [p for p in pmids if p]
+        if not pmids:
+            return {}
+
+        try:
+            response = requests.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+                params={
+                    "db": "pubmed",
+                    "id": ",".join(pmids),
+                    "retmode": "xml",
+                    "tool": "audslp_rss",
+                },
+                timeout=30
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+
+            result = {}
+            for article in root.findall(".//PubmedArticle"):
+                pmid_el = article.find(".//MedlineCitation/PMID")
+                if pmid_el is None or not pmid_el.text:
+                    continue
+                pub_types = [
+                    pt.text for pt in article.findall(".//PublicationTypeList/PublicationType")
+                    if pt.text
+                ]
+                result[pmid_el.text] = pub_types
+
+            print(f"✅ 成功取得 {len(result)}/{len(pmids)} 篇文章的研究類型")
+            return result
+        except Exception as e:
+            print(f"❌ 取得研究類型失敗: {e}")
+            return {}
+
     def load_existing_data_for_source(self, source):
         """從Supabase加載特定源的現有數據"""
         response = self.supabase.table("rss_entries").select("*").eq("source", source).execute()
@@ -298,7 +337,8 @@ Ensure the summary captures the essence of the research while being extremely co
                         "embedding": entry.get('embedding'),
                         "embedding_text": entry.get('embedding_text', ''),
                         "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None,
-                        "likes_count": 0 
+                        "publication_types": entry.get('publication_types', []),
+                        "likes_count": 0
                     }
                     
                     self.supabase.table("rss_entries").insert(insert_data).execute()
@@ -342,6 +382,15 @@ Ensure the summary captures the essence of the research while being extremely co
                             existing_entry['doi'] = entry['doi']
                             updated_entries.append(existing_entry)
                 
+                # 批量取得研究類型（僅針對新文章）
+                if new_entries:
+                    print(f"  Fetching publication types for {len(new_entries)} new articles...")
+                    pub_types_by_pmid = self.fetch_publication_types(
+                        [entry['pmid'] for entry in new_entries]
+                    )
+                    for entry in new_entries:
+                        entry['publication_types'] = pub_types_by_pmid.get(entry['pmid'], [])
+
                 # 批量生成向量嵌入（僅針對新文章）
                 if new_entries and self.enable_embeddings:
                     print(f"  Generating embeddings for {len(new_entries)} new articles...")
