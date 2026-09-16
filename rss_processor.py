@@ -17,7 +17,7 @@ class LiteratureProcessor:
         # 初始化 OpenAI 客戶端
         self.api_key = self.get_openai_api_key()
         self.client = OpenAI(api_key=self.api_key)
-        self.model = "gpt-4.1-mini"
+        self.model = "gpt-5.6-luna"
         
         # 向量嵌入設定
         self.enable_embeddings = True
@@ -347,9 +347,18 @@ Ensure the summary captures the essence of the research while being extremely co
                 print(f"Error processing entry {entry['pmid']} for source {source}: {e}")
                 print(f"Entry data: {entry}")
 
-    def process_rss_sources(self, sources):
-        """處理所有RSS來源並立即保存數據（包含向量嵌入）"""
+    def process_rss_sources(self, sources, max_new_entries=None):
+        """處理所有RSS來源並立即保存數據（包含向量嵌入）
+
+        Args:
+            max_new_entries: 測試模式用，限制本次執行最多處理幾篇「新」文章
+                （已存在文章的 DOI 更新不受此限制）。None 代表不限制。
+        """
+        processed_new_count = 0
         for name, url in sources.items():
+            if max_new_entries is not None and processed_new_count >= max_new_entries:
+                print(f"已達測試上限 {max_new_entries} 篇新文章，停止處理後續來源")
+                break
             try:
                 print(f"Processing source: {name}")
                 new_feed_data = self.fetch_rss_basic(url)
@@ -360,21 +369,25 @@ Ensure the summary captures the essence of the research while being extremely co
                 updated_entries = []
                 
                 for entry in new_feed_data['entries']:
+                    if max_new_entries is not None and processed_new_count >= max_new_entries:
+                        print(f"  已達測試上限 {max_new_entries} 篇新文章，停止處理來源 {name} 的後續項目")
+                        break
                     if entry['pmid'] not in existing_pmids:
                         # 處理新文章
                         print(f"  Processing new article: {entry['title'][:60]}...")
-                        
+
                         # 翻譯標題
                         entry['title_translated'] = self.translate_title(entry['title'])
-                        
+
                         # 生成摘要（兩步驟）
                         english_tldr, chinese_tldr = self.generate_tldr(entry['full_content'])
                         entry['english_tldr'] = english_tldr
                         entry['chinese_tldr'] = chinese_tldr
-                        
 
-                        
+
+
                         new_entries.append(entry)
+                        processed_new_count += 1
                     else:
                         # 對於重複文章，只更新DOI
                         existing_entry = existing_pmids[entry['pmid']]
@@ -435,14 +448,20 @@ Ensure the summary captures the essence of the research while being extremely co
 def main():
     """主程序入口"""
     try:
+        # 測試模式：限制本次最多處理幾篇新文章
+        max_new_entries_env = os.environ.get("MAX_NEW_ENTRIES")
+        max_new_entries = int(max_new_entries_env) if max_new_entries_env else None
+        if max_new_entries is not None:
+            print(f"⚠️ 測試模式：本次最多只處理 {max_new_entries} 篇新文章")
+
         # 初始化處理器
         processor = LiteratureProcessor()
-        
+
         # 載入RSS來源
         rss_sources = processor.load_rss_sources()
-        
+
         # 處理所有RSS來源
-        processor.process_rss_sources(rss_sources)
+        processor.process_rss_sources(rss_sources, max_new_entries=max_new_entries)
         print("RSS data processing completed successfully")
         
     except Exception as e:
