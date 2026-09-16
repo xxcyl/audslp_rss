@@ -257,8 +257,10 @@ Ensure the summary captures the essence of the research while being extremely co
             'entries': entries
         }
 
-    def fetch_publication_types(self, pmids):
-        """透過 PubMed E-utilities 批次取得文章的研究類型 (Publication Type)"""
+    def fetch_pubmed_metadata(self, pmids):
+        """透過 PubMed E-utilities 批次取得文章的研究類型 (Publication Type)
+        與 PMC ID（有 PMC ID 代表 PubMed Central 有提供免費全文）。
+        """
         pmids = [p for p in pmids if p]
         if not pmids:
             return {}
@@ -286,12 +288,17 @@ Ensure the summary captures the essence of the research while being extremely co
                     pt.text for pt in article.findall(".//PublicationTypeList/PublicationType")
                     if pt.text
                 ]
-                result[pmid_el.text] = pub_types
+                pmc_id = None
+                for article_id in article.findall(".//ArticleIdList/ArticleId"):
+                    if article_id.get("IdType") == "pmc":
+                        pmc_id = article_id.text
+                        break
+                result[pmid_el.text] = {"publication_types": pub_types, "pmc_id": pmc_id}
 
-            print(f"✅ 成功取得 {len(result)}/{len(pmids)} 篇文章的研究類型")
+            print(f"✅ 成功取得 {len(result)}/{len(pmids)} 篇文章的中繼資料")
             return result
         except Exception as e:
-            print(f"❌ 取得研究類型失敗: {e}")
+            print(f"❌ 取得文章中繼資料失敗: {e}")
             return {}
 
     def fetch_article_details_from_pubmed(self, pmid):
@@ -332,10 +339,13 @@ Ensure the summary captures the essence of the research while being extremely co
             full_content = "\n".join(abstract_parts)
 
             doi = None
+            pmc_id = None
             for article_id in article.findall(".//ArticleIdList/ArticleId"):
-                if article_id.get("IdType") == "doi":
+                id_type = article_id.get("IdType")
+                if id_type == "doi":
                     doi = article_id.text
-                    break
+                elif id_type == "pmc":
+                    pmc_id = article_id.text
 
             pub_types = [
                 pt.text for pt in article.findall(".//PublicationTypeList/PublicationType")
@@ -347,6 +357,7 @@ Ensure the summary captures the essence of the research while being extremely co
                 "full_content": full_content,
                 "doi": doi,
                 "publication_types": pub_types,
+                "pmc_id": pmc_id,
             }
         except Exception as e:
             print(f"❌ 取得文章詳細資料失敗 (pmid={pmid}): {e}")
@@ -396,6 +407,7 @@ Ensure the summary captures the essence of the research while being extremely co
                         "embedding_text": entry.get('embedding_text', ''),
                         "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None,
                         "publication_types": entry.get('publication_types', []),
+                        "pmc_id": entry.get('pmc_id'),
                         "likes_count": 0
                     }
                     
@@ -446,6 +458,7 @@ Ensure the summary captures the essence of the research while being extremely co
                     "english_tldr": english_tldr,
                     "doi": article_detail.get("doi") or existing.data[0].get("doi"),
                     "publication_types": article_detail.get("publication_types", []),
+                    "pmc_id": article_detail.get("pmc_id"),
                     "embedding": embedding,
                     "embedding_text": embedding_text,
                     "embedding_strategy": self.embedding_strategy if embedding else None,
@@ -504,14 +517,16 @@ Ensure the summary captures the essence of the research while being extremely co
                             existing_entry['doi'] = entry['doi']
                             updated_entries.append(existing_entry)
                 
-                # 批量取得研究類型（僅針對新文章）
+                # 批量取得研究類型與 PMC 免費全文資訊（僅針對新文章）
                 if new_entries:
-                    print(f"  Fetching publication types for {len(new_entries)} new articles...")
-                    pub_types_by_pmid = self.fetch_publication_types(
+                    print(f"  Fetching PubMed metadata for {len(new_entries)} new articles...")
+                    metadata_by_pmid = self.fetch_pubmed_metadata(
                         [entry['pmid'] for entry in new_entries]
                     )
                     for entry in new_entries:
-                        entry['publication_types'] = pub_types_by_pmid.get(entry['pmid'], [])
+                        meta = metadata_by_pmid.get(entry['pmid'], {})
+                        entry['publication_types'] = meta.get('publication_types', [])
+                        entry['pmc_id'] = meta.get('pmc_id')
 
                 # 批量生成向量嵌入（僅針對新文章）
                 if new_entries and self.enable_embeddings:
