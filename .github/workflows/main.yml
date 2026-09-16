@@ -9,6 +9,10 @@ on:
         description: '測試模式：本次最多處理幾篇新文章（留空 = 不限制，正式全量執行）'
         required: false
         default: ''
+      reprocess_pmids:
+        description: '重新處理模式：填入既有文章的 pmid，逗號分隔可一次多篇（設定後會忽略 max_new_entries，只重跑這幾篇）'
+        required: false
+        default: ''
 
 jobs:
   update-rss:
@@ -33,6 +37,7 @@ jobs:
         SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         MAX_NEW_ENTRIES: ${{ github.event.inputs.max_new_entries }}
+        REPROCESS_PMIDS: ${{ github.event.inputs.reprocess_pmids }}
       run: python rss_processor.py
 
     - name: Handle script failure
