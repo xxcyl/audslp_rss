@@ -3,3 +3,4 @@ beautifulsoup4
 openai
 supabase
 python-dateutil
+requests

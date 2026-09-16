@@ -5,6 +5,8 @@ import time
 import os
 import sys
 import re
+import requests
+import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from openai import OpenAI
 from supabase import create_client, Client
@@ -15,7 +17,7 @@ class LiteratureProcessor:
         # 初始化 OpenAI 客戶端
         self.api_key = self.get_openai_api_key()
         self.client = OpenAI(api_key=self.api_key)
-        self.model = "gpt-4.1-mini"
+        self.model = "gpt-5-mini"
         
         # 向量嵌入設定
         self.enable_embeddings = True
@@ -255,6 +257,101 @@ Ensure the summary captures the essence of the research while being extremely co
             'entries': entries
         }
 
+    def fetch_publication_types(self, pmids):
+        """透過 PubMed E-utilities 批次取得文章的研究類型 (Publication Type)"""
+        pmids = [p for p in pmids if p]
+        if not pmids:
+            return {}
+
+        try:
+            response = requests.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+                params={
+                    "db": "pubmed",
+                    "id": ",".join(pmids),
+                    "retmode": "xml",
+                    "tool": "audslp_rss",
+                },
+                timeout=30
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+
+            result = {}
+            for article in root.findall(".//PubmedArticle"):
+                pmid_el = article.find(".//MedlineCitation/PMID")
+                if pmid_el is None or not pmid_el.text:
+                    continue
+                pub_types = [
+                    pt.text for pt in article.findall(".//PublicationTypeList/PublicationType")
+                    if pt.text
+                ]
+                result[pmid_el.text] = pub_types
+
+            print(f"✅ 成功取得 {len(result)}/{len(pmids)} 篇文章的研究類型")
+            return result
+        except Exception as e:
+            print(f"❌ 取得研究類型失敗: {e}")
+            return {}
+
+    def fetch_article_details_from_pubmed(self, pmid):
+        """直接從 PubMed E-utilities 取得單篇文章的標題、摘要全文、doi、研究類型。
+
+        跟 fetch_rss_basic 不同，這個方法不依賴 RSS feed（RSS 只保留最新 15 篇，
+        舊文章可能已經不在裡面），適合用來重新處理已存在但資料有誤的文章。
+        """
+        try:
+            response = requests.get(
+                "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi",
+                params={
+                    "db": "pubmed",
+                    "id": pmid,
+                    "retmode": "xml",
+                    "tool": "audslp_rss",
+                },
+                timeout=30
+            )
+            response.raise_for_status()
+            root = ET.fromstring(response.content)
+
+            article = root.find(".//PubmedArticle")
+            if article is None:
+                print(f"❌ PubMed 找不到 pmid={pmid} 的文章")
+                return None
+
+            title_el = article.find(".//ArticleTitle")
+            title = "".join(title_el.itertext()).strip() if title_el is not None else ""
+
+            abstract_parts = []
+            for ab_text in article.findall(".//Abstract/AbstractText"):
+                label = ab_text.get("Label")
+                text = "".join(ab_text.itertext()).strip()
+                if not text:
+                    continue
+                abstract_parts.append(f"{label}: {text}" if label else text)
+            full_content = "\n".join(abstract_parts)
+
+            doi = None
+            for article_id in article.findall(".//ArticleIdList/ArticleId"):
+                if article_id.get("IdType") == "doi":
+                    doi = article_id.text
+                    break
+
+            pub_types = [
+                pt.text for pt in article.findall(".//PublicationTypeList/PublicationType")
+                if pt.text
+            ]
+
+            return {
+                "title": title,
+                "full_content": full_content,
+                "doi": doi,
+                "publication_types": pub_types,
+            }
+        except Exception as e:
+            print(f"❌ 取得文章詳細資料失敗 (pmid={pmid}): {e}")
+            return None
+
     def load_existing_data_for_source(self, source):
         """從Supabase加載特定源的現有數據"""
         response = self.supabase.table("rss_entries").select("*").eq("source", source).execute()
@@ -298,7 +395,8 @@ Ensure the summary captures the essence of the research while being extremely co
                         "embedding": entry.get('embedding'),
                         "embedding_text": entry.get('embedding_text', ''),
                         "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None,
-                        "likes_count": 0 
+                        "publication_types": entry.get('publication_types', []),
+                        "likes_count": 0
                     }
                     
                     self.supabase.table("rss_entries").insert(insert_data).execute()
@@ -307,9 +405,69 @@ Ensure the summary captures the essence of the research while being extremely co
                 print(f"Error processing entry {entry['pmid']} for source {source}: {e}")
                 print(f"Entry data: {entry}")
 
-    def process_rss_sources(self, sources):
-        """處理所有RSS來源並立即保存數據（包含向量嵌入）"""
+    def reprocess_articles(self, pmids):
+        """重新處理指定 pmid 的既有文章：重新翻譯標題、重新生成中英文摘要、
+        重新取得研究類型與向量嵌入，並覆蓋 Supabase 裡同一篇文章的資料。
+
+        用於資料有誤或當初 OpenAI 呼叫失敗時的補救，不會新增資料列，
+        也不會動到 id/source/link/published/pmid/likes_count。
+        """
+        for pmid in pmids:
+            try:
+                print(f"重新處理 pmid={pmid} ...")
+                existing = self.supabase.table("rss_entries").select("*").eq("pmid", pmid).execute()
+                if not existing.data:
+                    print(f"❌ 找不到 pmid={pmid} 的既有文章，略過（新文章請用一般流程）")
+                    continue
+
+                article_detail = self.fetch_article_details_from_pubmed(pmid)
+                if not article_detail or not article_detail.get("full_content"):
+                    print(f"❌ 無法從 PubMed 取得 pmid={pmid} 的完整資料，略過")
+                    continue
+
+                title_translated = self.translate_title(article_detail["title"])
+                english_tldr, chinese_tldr = self.generate_tldr(article_detail["full_content"])
+
+                embedding_source = {
+                    "title": article_detail["title"],
+                    "title_translated": title_translated,
+                    "full_content": article_detail["full_content"],
+                    "english_tldr": english_tldr,
+                    "chinese_tldr": chinese_tldr,
+                }
+                embedding_text = self.prepare_embedding_text(embedding_source, self.embedding_strategy)
+                embeddings = self.generate_embeddings([embedding_text]) if self.enable_embeddings else [None]
+                embedding = embeddings[0] if embeddings else None
+
+                update_data = {
+                    "title": article_detail["title"],
+                    "title_translated": title_translated,
+                    "tldr": chinese_tldr,
+                    "english_tldr": english_tldr,
+                    "doi": article_detail.get("doi") or existing.data[0].get("doi"),
+                    "publication_types": article_detail.get("publication_types", []),
+                    "embedding": embedding,
+                    "embedding_text": embedding_text,
+                    "embedding_strategy": self.embedding_strategy if embedding else None,
+                }
+
+                self.supabase.table("rss_entries").update(update_data).eq("pmid", pmid).execute()
+                print(f"✅ 已重新處理並更新 pmid={pmid}")
+            except Exception as e:
+                print(f"❌ 重新處理 pmid={pmid} 失敗: {e}")
+
+    def process_rss_sources(self, sources, max_new_entries=None):
+        """處理所有RSS來源並立即保存數據（包含向量嵌入）
+
+        Args:
+            max_new_entries: 測試模式用，限制本次執行最多處理幾篇「新」文章
+                （已存在文章的 DOI 更新不受此限制）。None 代表不限制。
+        """
+        processed_new_count = 0
         for name, url in sources.items():
+            if max_new_entries is not None and processed_new_count >= max_new_entries:
+                print(f"已達測試上限 {max_new_entries} 篇新文章，停止處理後續來源")
+                break
             try:
                 print(f"Processing source: {name}")
                 new_feed_data = self.fetch_rss_basic(url)
@@ -320,21 +478,25 @@ Ensure the summary captures the essence of the research while being extremely co
                 updated_entries = []
                 
                 for entry in new_feed_data['entries']:
+                    if max_new_entries is not None and processed_new_count >= max_new_entries:
+                        print(f"  已達測試上限 {max_new_entries} 篇新文章，停止處理來源 {name} 的後續項目")
+                        break
                     if entry['pmid'] not in existing_pmids:
                         # 處理新文章
                         print(f"  Processing new article: {entry['title'][:60]}...")
-                        
+
                         # 翻譯標題
                         entry['title_translated'] = self.translate_title(entry['title'])
-                        
+
                         # 生成摘要（兩步驟）
                         english_tldr, chinese_tldr = self.generate_tldr(entry['full_content'])
                         entry['english_tldr'] = english_tldr
                         entry['chinese_tldr'] = chinese_tldr
-                        
 
-                        
+
+
                         new_entries.append(entry)
+                        processed_new_count += 1
                     else:
                         # 對於重複文章，只更新DOI
                         existing_entry = existing_pmids[entry['pmid']]
@@ -342,6 +504,15 @@ Ensure the summary captures the essence of the research while being extremely co
                             existing_entry['doi'] = entry['doi']
                             updated_entries.append(existing_entry)
                 
+                # 批量取得研究類型（僅針對新文章）
+                if new_entries:
+                    print(f"  Fetching publication types for {len(new_entries)} new articles...")
+                    pub_types_by_pmid = self.fetch_publication_types(
+                        [entry['pmid'] for entry in new_entries]
+                    )
+                    for entry in new_entries:
+                        entry['publication_types'] = pub_types_by_pmid.get(entry['pmid'], [])
+
                 # 批量生成向量嵌入（僅針對新文章）
                 if new_entries and self.enable_embeddings:
                     print(f"  Generating embeddings for {len(new_entries)} new articles...")
@@ -386,14 +557,30 @@ Ensure the summary captures the essence of the research while being extremely co
 def main():
     """主程序入口"""
     try:
+        # 重新處理模式：只重跑指定 pmid 的既有文章，不做一般 RSS 掃描
+        reprocess_pmids_env = os.environ.get("REPROCESS_PMIDS")
+        if reprocess_pmids_env:
+            pmids = [p.strip() for p in reprocess_pmids_env.split(",") if p.strip()]
+            print(f"🔧 重新處理模式：{pmids}")
+            processor = LiteratureProcessor()
+            processor.reprocess_articles(pmids)
+            print("Reprocessing completed successfully")
+            return
+
+        # 測試模式：限制本次最多處理幾篇新文章
+        max_new_entries_env = os.environ.get("MAX_NEW_ENTRIES")
+        max_new_entries = int(max_new_entries_env) if max_new_entries_env else None
+        if max_new_entries is not None:
+            print(f"⚠️ 測試模式：本次最多只處理 {max_new_entries} 篇新文章")
+
         # 初始化處理器
         processor = LiteratureProcessor()
-        
+
         # 載入RSS來源
         rss_sources = processor.load_rss_sources()
-        
+
         # 處理所有RSS來源
-        processor.process_rss_sources(rss_sources)
+        processor.process_rss_sources(rss_sources, max_new_entries=max_new_entries)
         print("RSS data processing completed successfully")
         
     except Exception as e:
