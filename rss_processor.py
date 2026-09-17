@@ -476,13 +476,28 @@ Ensure the summary captures the essence of the research while being extremely co
         成本遠低於 reprocess_articles。挑選 publication_types 是 null 的
         文章（代表從未跑過這個補齊流程），批次查詢 PubMed 後直接覆蓋這兩欄。
         """
-        response = (
-            self.supabase.table("rss_entries")
-            .select("id, pmid")
-            .is_("publication_types", "null")
-            .execute()
-        )
-        rows = [r for r in (response.data or []) if r.get("pmid")]
+        # 單次 select 會受 PostgREST 預設的每次請求列數上限（通常是 1000 筆）
+        # 限制，要分頁掃過所有列才能抓到全部缺中繼資料的舊文章。
+        rows = []
+        page_size = 1000
+        offset = 0
+        while True:
+            response = (
+                self.supabase.table("rss_entries")
+                .select("id, pmid")
+                .is_("publication_types", "null")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = response.data or []
+            if not page:
+                break
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+
+        rows = [r for r in rows if r.get("pmid")]
         print(f"找到 {len(rows)} 篇缺少中繼資料的文章，開始補齊...")
 
         updated_count = 0
