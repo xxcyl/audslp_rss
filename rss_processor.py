@@ -11,6 +11,21 @@ from bs4 import BeautifulSoup
 from openai import OpenAI
 from supabase import create_client, Client
 
+
+def extract_major_mesh_terms(pubmed_article_el):
+    """從單篇 PubmedArticle XML 節點取出「主要主題」MeSH 標籤。
+
+    一篇文章常有 10-15 個 MeSH 詞，但多數是 Humans/Animals/Female 這種
+    人口學雜訊。只取 MajorTopicYN="Y"（PubMed 編目員標記為該文章真正
+    主題的詞，通常 3-6 個），過濾掉雜訊也不需要額外自建停用字表。
+    """
+    return [
+        descriptor.text
+        for descriptor in pubmed_article_el.findall(".//MeshHeadingList/MeshHeading/DescriptorName")
+        if descriptor.get("MajorTopicYN") == "Y" and descriptor.text
+    ]
+
+
 class LiteratureProcessor:
     def __init__(self):
         """初始化文獻處理器"""
@@ -258,8 +273,8 @@ Ensure the summary captures the essence of the research while being extremely co
         }
 
     def fetch_pubmed_metadata(self, pmids):
-        """透過 PubMed E-utilities 批次取得文章的研究類型 (Publication Type)
-        與 PMC ID（有 PMC ID 代表 PubMed Central 有提供免費全文）。
+        """透過 PubMed E-utilities 批次取得文章的研究類型 (Publication Type)、
+        PMC ID（有值代表 PubMed Central 有提供免費全文）與主題標籤 (MeSH)。
         """
         pmids = [p for p in pmids if p]
         if not pmids:
@@ -293,7 +308,12 @@ Ensure the summary captures the essence of the research while being extremely co
                     if article_id.get("IdType") == "pmc":
                         pmc_id = article_id.text
                         break
-                result[pmid_el.text] = {"publication_types": pub_types, "pmc_id": pmc_id}
+                mesh_terms = extract_major_mesh_terms(article)
+                result[pmid_el.text] = {
+                    "publication_types": pub_types,
+                    "pmc_id": pmc_id,
+                    "mesh_terms": mesh_terms,
+                }
 
             print(f"✅ 成功取得 {len(result)}/{len(pmids)} 篇文章的中繼資料")
             return result
@@ -351,6 +371,7 @@ Ensure the summary captures the essence of the research while being extremely co
                 pt.text for pt in article.findall(".//PublicationTypeList/PublicationType")
                 if pt.text
             ]
+            mesh_terms = extract_major_mesh_terms(article)
 
             return {
                 "title": title,
@@ -358,6 +379,7 @@ Ensure the summary captures the essence of the research while being extremely co
                 "doi": doi,
                 "publication_types": pub_types,
                 "pmc_id": pmc_id,
+                "mesh_terms": mesh_terms,
             }
         except Exception as e:
             print(f"❌ 取得文章詳細資料失敗 (pmid={pmid}): {e}")
@@ -408,6 +430,7 @@ Ensure the summary captures the essence of the research while being extremely co
                         "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None,
                         "publication_types": entry.get('publication_types', []),
                         "pmc_id": entry.get('pmc_id'),
+                        "mesh_terms": entry.get('mesh_terms', []),
                         "likes_count": 0
                     }
                     
@@ -459,6 +482,7 @@ Ensure the summary captures the essence of the research while being extremely co
                     "doi": article_detail.get("doi") or existing.data[0].get("doi"),
                     "publication_types": article_detail.get("publication_types", []),
                     "pmc_id": article_detail.get("pmc_id"),
+                    "mesh_terms": article_detail.get("mesh_terms", []),
                     "embedding": embedding,
                     "embedding_text": embedding_text,
                     "embedding_strategy": self.embedding_strategy if embedding else None,
@@ -470,11 +494,12 @@ Ensure the summary captures the essence of the research while being extremely co
                 print(f"❌ 重新處理 pmid={pmid} 失敗: {e}")
 
     def backfill_metadata(self, batch_size=190):
-        """一次性補齊舊文章缺少的 publication_types / pmc_id 中繼資料。
+        """一次性補齊舊文章缺少的 publication_types / pmc_id / mesh_terms 中繼資料。
 
         只呼叫 PubMed API，不會重新翻譯標題、重新生成摘要或重算向量嵌入，
-        成本遠低於 reprocess_articles。挑選 publication_types 是 null 的
-        文章（代表從未跑過這個補齊流程），批次查詢 PubMed 後直接覆蓋這兩欄。
+        成本遠低於 reprocess_articles。挑選這三欄任一為 null 的文章（代表
+        從未跑過這個補齊流程，或是補齊流程當時還沒有 mesh_terms 這個欄位），
+        批次查詢 PubMed 後直接覆蓋這三欄。
         """
         # 單次 select 會受 PostgREST 預設的每次請求列數上限（通常是 1000 筆）
         # 限制，要分頁掃過所有列才能抓到全部缺中繼資料的舊文章。
@@ -485,7 +510,7 @@ Ensure the summary captures the essence of the research while being extremely co
             response = (
                 self.supabase.table("rss_entries")
                 .select("id, pmid")
-                .is_("publication_types", "null")
+                .or_("publication_types.is.null,mesh_terms.is.null")
                 .range(offset, offset + page_size - 1)
                 .execute()
             )
@@ -514,6 +539,7 @@ Ensure the summary captures the essence of the research while being extremely co
                     self.supabase.table("rss_entries").update({
                         "publication_types": meta.get("publication_types", []),
                         "pmc_id": meta.get("pmc_id"),
+                        "mesh_terms": meta.get("mesh_terms", []),
                     }).eq("id", row["id"]).execute()
                     updated_count += 1
                 except Exception as e:
@@ -583,6 +609,7 @@ Ensure the summary captures the essence of the research while being extremely co
                         meta = metadata_by_pmid.get(entry['pmid'], {})
                         entry['publication_types'] = meta.get('publication_types', [])
                         entry['pmc_id'] = meta.get('pmc_id')
+                        entry['mesh_terms'] = meta.get('mesh_terms', [])
 
                 # 批量生成向量嵌入（僅針對新文章）
                 if new_entries and self.enable_embeddings:
