@@ -469,6 +469,47 @@ Ensure the summary captures the essence of the research while being extremely co
             except Exception as e:
                 print(f"❌ 重新處理 pmid={pmid} 失敗: {e}")
 
+    def backfill_metadata(self, batch_size=190):
+        """一次性補齊舊文章缺少的 publication_types / pmc_id 中繼資料。
+
+        只呼叫 PubMed API，不會重新翻譯標題、重新生成摘要或重算向量嵌入，
+        成本遠低於 reprocess_articles。挑選 publication_types 是 null 的
+        文章（代表從未跑過這個補齊流程），批次查詢 PubMed 後直接覆蓋這兩欄。
+        """
+        response = (
+            self.supabase.table("rss_entries")
+            .select("id, pmid")
+            .is_("publication_types", "null")
+            .execute()
+        )
+        rows = [r for r in (response.data or []) if r.get("pmid")]
+        print(f"找到 {len(rows)} 篇缺少中繼資料的文章，開始補齊...")
+
+        updated_count = 0
+        for i in range(0, len(rows), batch_size):
+            batch = rows[i:i + batch_size]
+            pmids = [r["pmid"] for r in batch]
+            metadata_by_pmid = self.fetch_pubmed_metadata(pmids)
+
+            for row in batch:
+                meta = metadata_by_pmid.get(row["pmid"])
+                if meta is None:
+                    continue
+                try:
+                    self.supabase.table("rss_entries").update({
+                        "publication_types": meta.get("publication_types", []),
+                        "pmc_id": meta.get("pmc_id"),
+                    }).eq("id", row["id"]).execute()
+                    updated_count += 1
+                except Exception as e:
+                    print(f"❌ 更新 id={row['id']} (pmid={row['pmid']}) 失敗: {e}")
+
+            print(f"  進度：{min(i + batch_size, len(rows))}/{len(rows)}")
+            if i + batch_size < len(rows):
+                time.sleep(0.5)  # 禮貌性延遲，避免超過 NCBI 無 API key 時每秒 3 次請求的限制
+
+        print(f"✅ 補齊完成，共更新 {updated_count}/{len(rows)} 篇文章")
+
     def process_rss_sources(self, sources, max_new_entries=None):
         """處理所有RSS來源並立即保存數據（包含向量嵌入）
 
@@ -580,6 +621,14 @@ def main():
             processor = LiteratureProcessor()
             processor.reprocess_articles(pmids)
             print("Reprocessing completed successfully")
+            return
+
+        # 補齊模式：只幫舊文章補上缺少的 publication_types / pmc_id，不做一般 RSS 掃描
+        if os.environ.get("BACKFILL_METADATA", "").lower() == "true":
+            print("🔧 補齊模式：補齊缺少 publication_types / pmc_id 的舊文章")
+            processor = LiteratureProcessor()
+            processor.backfill_metadata()
+            print("Backfill completed successfully")
             return
 
         # 測試模式：限制本次最多處理幾篇新文章
