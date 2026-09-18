@@ -494,12 +494,14 @@ Ensure the summary captures the essence of the research while being extremely co
                 print(f"❌ 重新處理 pmid={pmid} 失敗: {e}")
 
     def backfill_metadata(self, batch_size=190):
-        """一次性補齊舊文章缺少的 publication_types / pmc_id / mesh_terms 中繼資料。
+        """補齊文章缺少的 publication_types / pmc_id / mesh_terms 中繼資料。
 
         只呼叫 PubMed API，不會重新翻譯標題、重新生成摘要或重算向量嵌入，
-        成本遠低於 reprocess_articles。挑選這三欄任一為 null 的文章（代表
-        從未跑過這個補齊流程，或是補齊流程當時還沒有 mesh_terms 這個欄位），
-        批次查詢 PubMed 後直接覆蓋這三欄。
+        成本遠低於 reprocess_articles。挑選 publication_types 或 mesh_terms
+        為 null「或空陣列」的文章：文章剛被爬進來時 PubMed 常常還沒完成
+        MeSH 編目，只能先存成空陣列 []，若這裡只比對 is.null 會導致這些
+        文章永遠不會被重新查詢——即使幾週後 PubMed 已經補上 MeSH 標籤，
+        資料庫也抓不到，所以要一併把空陣列納入「需要補齊」的條件。
         """
         # 單次 select 會受 PostgREST 預設的每次請求列數上限（通常是 1000 筆）
         # 限制，要分頁掃過所有列才能抓到全部缺中繼資料的舊文章。
@@ -510,7 +512,10 @@ Ensure the summary captures the essence of the research while being extremely co
             response = (
                 self.supabase.table("rss_entries")
                 .select("id, pmid")
-                .or_("publication_types.is.null,mesh_terms.is.null")
+                .or_(
+                    "publication_types.is.null,mesh_terms.is.null,"
+                    "publication_types.eq.{},mesh_terms.eq.{}"
+                )
                 .range(offset, offset + page_size - 1)
                 .execute()
             )
