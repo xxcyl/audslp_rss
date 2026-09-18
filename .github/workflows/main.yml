@@ -2,7 +2,8 @@ name: Update RSS Feed
 
 on:
   schedule:
-   - cron: '0 0 */1 * *'  # 每1天運行一次
+   - cron: '0 0 * * *'    # 每天運行一次：一般 RSS 掃描 + 新文章處理
+   - cron: '0 3 * * 0'    # 每週日額外運行一次：backfill_metadata 補齊模式
   workflow_dispatch:  # 允許手動觸發
     inputs:
       max_new_entries:
@@ -42,7 +43,9 @@ jobs:
         SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
         MAX_NEW_ENTRIES: ${{ github.event.inputs.max_new_entries }}
         REPROCESS_PMIDS: ${{ github.event.inputs.reprocess_pmids }}
-        BACKFILL_METADATA: ${{ github.event.inputs.backfill_metadata }}
+        # 手動觸發時看 workflow_dispatch 的輸入；排程觸發時，週日凌晨那個 cron
+        # （'0 3 * * 0'）自動視為補齊模式，其餘每天的排程照常跑一般 RSS 掃描
+        BACKFILL_METADATA: ${{ github.event.inputs.backfill_metadata || (github.event.schedule == '0 3 * * 0' && 'true' || '') }}
       run: python rss_processor.py
 
     - name: Handle script failure
