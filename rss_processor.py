@@ -430,8 +430,7 @@ Ensure the summary captures the essence of the research while being extremely co
                         "embedding_strategy": self.embedding_strategy if entry.get('embedding') else None,
                         "publication_types": entry.get('publication_types', []),
                         "pmc_id": entry.get('pmc_id'),
-                        "mesh_terms": entry.get('mesh_terms', []),
-                        "likes_count": 0
+                        "mesh_terms": entry.get('mesh_terms', [])
                     }
                     
                     self.supabase.table("rss_entries").insert(insert_data).execute()
@@ -445,7 +444,7 @@ Ensure the summary captures the essence of the research while being extremely co
         重新取得研究類型與向量嵌入，並覆蓋 Supabase 裡同一篇文章的資料。
 
         用於資料有誤或當初 OpenAI 呼叫失敗時的補救，不會新增資料列，
-        也不會動到 id/source/link/published/pmid/likes_count。
+        也不會動到 id/source/link/published/pmid/bookmark_count。
         """
         for pmid in pmids:
             try:
