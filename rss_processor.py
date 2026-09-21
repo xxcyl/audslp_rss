@@ -12,6 +12,12 @@ from openai import OpenAI
 from supabase import create_client, Client
 
 
+class RepeatedSaveFailure(Exception):
+    """連續多筆資料庫寫入失敗，代表可能是系統性問題（例如欄位不存在），
+    中止整次執行以避免對其餘來源持續浪費 OpenAI 呼叫。"""
+    pass
+
+
 def extract_major_mesh_terms(pubmed_article_el):
     """從單篇 PubmedArticle XML 節點取出「主要主題」MeSH 標籤。
 
@@ -43,7 +49,14 @@ class LiteratureProcessor:
         url: str = os.environ.get("SUPABASE_URL")
         key: str = os.environ.get("SUPABASE_KEY")
         self.supabase: Client = create_client(url, key)
-        
+
+        # 寫入失敗追蹤：save_failure_count 統計整次執行共失敗幾筆（用來讓
+        # job 最後回報失敗），consecutive_save_failures 統計「連續」失敗
+        # 幾筆（用來偵測系統性問題並提早中止，見 save_rss_data）
+        self.save_failure_count = 0
+        self.consecutive_save_failures = 0
+        self.consecutive_save_failure_threshold = 3
+
         print(f"✅ LiteratureProcessor 初始化完成")
         print(f"   - OpenAI 模型: {self.model}")
         print(f"   - 嵌入模型: {self.embedding_model}")
@@ -413,6 +426,7 @@ Ensure the summary captures the essence of the research while being extremely co
                     
                     self.supabase.table("rss_entries").update(update_data).eq("source", source).eq("pmid", entry['pmid']).execute()
                     print(f"Updated entry {entry['pmid']} for source {source}")
+                    self.consecutive_save_failures = 0
                 else:
                     # 對於新條目，插入所有字段
                     insert_data = {
@@ -435,9 +449,18 @@ Ensure the summary captures the essence of the research while being extremely co
                     
                     self.supabase.table("rss_entries").insert(insert_data).execute()
                     print(f"Inserted new entry {entry['pmid']} for source {source}")
+                    self.consecutive_save_failures = 0
             except Exception as e:
                 print(f"Error processing entry {entry['pmid']} for source {source}: {e}")
                 print(f"Entry data: {entry}")
+                self.save_failure_count += 1
+                self.consecutive_save_failures += 1
+                if self.consecutive_save_failures >= self.consecutive_save_failure_threshold:
+                    raise RepeatedSaveFailure(
+                        f"連續 {self.consecutive_save_failures} 筆資料庫寫入失敗，"
+                        "疑似系統性問題（例如欄位不存在），停止本次執行以避免對其餘"
+                        "來源繼續浪費 OpenAI 呼叫"
+                    ) from e
 
     def reprocess_articles(self, pmids):
         """重新處理指定 pmid 的既有文章：重新翻譯標題、重新生成中英文摘要、
@@ -639,6 +662,10 @@ Ensure the summary captures the essence of the research while being extremely co
                     print(f"Processed {len(new_entries)} new entries and updated {len(updated_entries)} existing entries for {name}")
                 else:
                     print(f"No new entries or updates for {name}")
+            except RepeatedSaveFailure:
+                # 系統性寫入問題，不要繼續處理其餘來源（會白白浪費 OpenAI 呼叫），
+                # 往上拋讓 main() 印出訊息並讓這次執行以失敗結束
+                raise
             except Exception as e:
                 print(f"Error processing source {name}: {e}")
                 continue
@@ -691,8 +718,13 @@ def main():
 
         # 處理所有RSS來源
         processor.process_rss_sources(rss_sources, max_new_entries=max_new_entries)
+
+        if processor.save_failure_count > 0:
+            print(f"❌ 本次執行有 {processor.save_failure_count} 篇文章資料庫寫入失敗，詳見上方 log")
+            sys.exit(1)
+
         print("RSS data processing completed successfully")
-        
+
     except Exception as e:
         print(f"An error occurred during RSS processing: {e}")
         sys.exit(1)
