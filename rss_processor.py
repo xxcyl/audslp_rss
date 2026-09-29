@@ -113,7 +113,7 @@ Ensure the summary captures the essence of the research while being extremely co
             return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"Error in generate_english_tldr: {e}")
-            return "Unable to generate English summary."
+            return None
 
     def translate_tldr_to_chinese(self, english_tldr):
         """將英文TL;DR翻譯成白話中文"""
@@ -143,21 +143,47 @@ Ensure the summary captures the essence of the research while being extremely co
             return response.choices[0].message.content.strip()
         except Exception as e:
             print(f"Error in translate_tldr_to_chinese: {e}")
-            return "無法翻譯摘要"
+            return None
+
+    # process_rss_sources 呼叫前已經檔掉完全空白的內容，這裡再加一層輸出端
+    # 檢查當防呆：內容過短、格式異常等情況下 AI 仍可能給出求助/拒絕訊息
+    # （例如「請提供文章內容」），要擋下來，不能當成真正的摘要存進資料庫。
+    _SUMMARY_FAILURE_MARKERS = (
+        "provide the", "provide me", "please provide", "no content", "no text",
+        "unable to generate", "as an ai", "i need the", "i don't have",
+        "i do not have", "no abstract", "cannot summarize", "can't summarize",
+    )
+
+    def _looks_like_summary_failure(self, text):
+        """判斷 AI 回應是不是求助/拒絕訊息，而不是真正的摘要內容。"""
+        if not text or not text.strip():
+            return True
+        lowered = text.strip().lower()
+        return any(marker in lowered for marker in self._SUMMARY_FAILURE_MARKERS)
 
     def generate_tldr(self, text, target_language="zh-TW"):
-        """使用兩步驟流程生成文章的TL;DR摘要"""
+        """使用兩步驟流程生成文章的TL;DR摘要
+
+        任何一步失敗、或 AI 回應看起來像求助/拒絕訊息（而非真正摘要），
+        一律回傳 (None, None)，不要把失敗訊息當成摘要內容存進資料庫。
+        """
         try:
             # 第一步：生成英文摘要
             english_tldr = self.generate_english_tldr(text)
-            
+            if self._looks_like_summary_failure(english_tldr):
+                print(f"⚠️ 偵測到疑似無效的摘要回應，不存入資料庫：{(english_tldr or '')[:80]!r}")
+                return None, None
+
             # 第二步：翻譯成中文
             chinese_tldr = self.translate_tldr_to_chinese(english_tldr)
-            
+            if self._looks_like_summary_failure(chinese_tldr):
+                print(f"⚠️ 偵測到疑似無效的中文翻譯回應，不存入資料庫：{(chinese_tldr or '')[:80]!r}")
+                return english_tldr, None
+
             return english_tldr, chinese_tldr
         except Exception as e:
             print(f"Error in generate_tldr: {e}")
-            return "Unable to generate summary.", "無法生成摘要"
+            return None, None
 
     # generate_keywords 方法已移除，不再需要
 
@@ -610,12 +636,18 @@ Ensure the summary captures the essence of the research while being extremely co
                         # 翻譯標題
                         entry['title_translated'] = self.translate_title(entry['title'])
 
-                        # 生成摘要（兩步驟）
-                        english_tldr, chinese_tldr = self.generate_tldr(entry['full_content'])
-                        entry['english_tldr'] = english_tldr
-                        entry['chinese_tldr'] = chinese_tldr
-
-
+                        # 有些 RSS 條目（更正啟事、社論、會議摘要等）本來就沒有摘要全文。
+                        # 若把空內容送去給 AI，AI 會因為沒東西可摘要而回一段「請提供文章
+                        # 內容」之類的求助訊息，曾經被誤存成摘要。這裡先檢查內容是否足夠，
+                        # 不夠就不呼叫摘要 API，直接留空，交由前端隱藏摘要區塊。
+                        if entry.get('full_content', '').strip():
+                            english_tldr, chinese_tldr = self.generate_tldr(entry['full_content'])
+                            entry['english_tldr'] = english_tldr
+                            entry['chinese_tldr'] = chinese_tldr
+                        else:
+                            print(f"  ⚠️ 略過摘要生成（無摘要全文）：{entry['title'][:60]}")
+                            entry['english_tldr'] = None
+                            entry['chinese_tldr'] = None
 
                         new_entries.append(entry)
                         processed_new_count += 1
