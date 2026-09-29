@@ -630,24 +630,27 @@ Ensure the summary captures the essence of the research while being extremely co
                         print(f"  已達測試上限 {max_new_entries} 篇新文章，停止處理來源 {name} 的後續項目")
                         break
                     if entry['pmid'] not in existing_pmids:
+                        # 有些 RSS 條目（更正啟事、社論、會議摘要等）本來就沒有摘要全文。
+                        # 網站的定位是「文章摘要推播」，沒有摘要的文章對讀者沒有價值，
+                        # 顯示出來只有標題、沒有內容，看起來像壞掉一樣，所以這裡直接整篇
+                        # 跳過、不寫入資料庫——而不是只跳過摘要生成、卻還是把空殼文章存
+                        # 進去。之後如果同一個 pmid 還在 RSS 視窗內會再檢查一次，等
+                        # PubMed 補上摘要（若有）就會正常處理；長期沒有摘要的文章會隨
+                        # RSS 視窗捲動自然不再出現，不需要另外清除。
+                        if not entry.get('full_content', '').strip():
+                            print(f"  ⚠️ 略過整篇文章（無摘要全文，不寫入資料庫）：{entry['title'][:60]}")
+                            continue
+
                         # 處理新文章
                         print(f"  Processing new article: {entry['title'][:60]}...")
 
                         # 翻譯標題
                         entry['title_translated'] = self.translate_title(entry['title'])
 
-                        # 有些 RSS 條目（更正啟事、社論、會議摘要等）本來就沒有摘要全文。
-                        # 若把空內容送去給 AI，AI 會因為沒東西可摘要而回一段「請提供文章
-                        # 內容」之類的求助訊息，曾經被誤存成摘要。這裡先檢查內容是否足夠，
-                        # 不夠就不呼叫摘要 API，直接留空，交由前端隱藏摘要區塊。
-                        if entry.get('full_content', '').strip():
-                            english_tldr, chinese_tldr = self.generate_tldr(entry['full_content'])
-                            entry['english_tldr'] = english_tldr
-                            entry['chinese_tldr'] = chinese_tldr
-                        else:
-                            print(f"  ⚠️ 略過摘要生成（無摘要全文）：{entry['title'][:60]}")
-                            entry['english_tldr'] = None
-                            entry['chinese_tldr'] = None
+                        # 生成摘要（兩步驟）
+                        english_tldr, chinese_tldr = self.generate_tldr(entry['full_content'])
+                        entry['english_tldr'] = english_tldr
+                        entry['chinese_tldr'] = chinese_tldr
 
                         new_entries.append(entry)
                         processed_new_count += 1
