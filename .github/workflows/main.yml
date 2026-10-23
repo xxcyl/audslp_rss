@@ -29,7 +29,8 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v5  # 更新到 v5
       with:
-        python-version: '3.9'  # 指定 Python 版本
+        python-version: '3.12'  # 指定 Python 版本（3.9 已 EOL，且 ubuntu-latest 遷移到
+                                 # Ubuntu 26.04 後找不到對應的 3.9 build，改用現行維護版本）
 
     - name: Install dependencies
       run: |
